@@ -66,6 +66,7 @@ def get_numeric_user_id(username, token):
         'access_token': token,
         'v': '5.131'
     }
+
     response = vk_request('users.get', params)
     return response['response'][0]['id']
 
