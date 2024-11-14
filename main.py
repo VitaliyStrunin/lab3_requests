@@ -7,6 +7,8 @@ import neo4j.exceptions
 from neo4j import GraphDatabase
 
 semaphore = asyncio.Semaphore(100)  # семафорчик, чтобы не возникала ошибка с переполнением буфера
+current_amount_of_users = 0
+users_counter_lock = asyncio.Lock() # блокировка для предотвращения race condition
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,8 @@ async def get_user_subscriptions(user_id, token):
         subscriptions_data = await vk_request('users.getSubscriptions', params)
         return subscriptions_data.get('response', {}).get('items', [])
 
-def save_user_to_neo(transaction, user):
+async def save_user_to_neo(transaction, user):
+    global current_amount_of_users
     transaction.run(
         """
         
@@ -73,6 +76,10 @@ def save_user_to_neo(transaction, user):
         sex=user.get('sex'), home_town=user.get('home_town'),
         city=user.get('city', {}).get('title')
     )
+    async with users_counter_lock:
+        current_amount_of_users += 1
+        if current_amount_of_users % 100:
+            logger.info(f"{current_amount_of_users} users added to database!")
 
 def save_group_to_neo(transaction, group):
     transaction.run(
@@ -208,6 +215,7 @@ async def main():
     collect_data = args.collect_data
     username = args.user_id
     user_id = await get_numeric_user_id(username, token)
+
     if user_id is None: # проверка на корректность получения user_id
         logger.error("Failed to get user ID. Check token and username.")
         return
@@ -220,8 +228,10 @@ async def main():
         except neo4j.exceptions.AuthError:
             logger.error("Neo4j connection failed, check data and retry")
             return
+
     with driver.session() as session:
         if collect_data:
+            logger.info(f"Started getting info about id{user_id}")
             await collect_data_async(user_id, token, session, depth=2)
         if request_type == 'all':
             users_count = session.execute_read(get_users_count)
